@@ -258,8 +258,17 @@ class MarbleGame:
 
         return done, info
 
-    def reset(self):
-        p.resetBasePositionAndOrientation(self.ball_id, self.start_pos, [0,0,0,1])
+    def reset(self, random_spawn=False):
+        spawn_pos = self.start_pos
+        if random_spawn:
+            rx, ry = self.maze_gen.get_random_valid_cell()
+            offset_x = -(self.maze_width * self.cell_size) / 2
+            offset_y = -(self.maze_height * self.cell_size) / 2
+            cx = offset_x + (rx * self.cell_size) + (self.cell_size / 2)
+            cy = offset_y + (ry * self.cell_size) + (self.cell_size / 2)
+            spawn_pos = [cx, cy, 0.5]
+
+        p.resetBasePositionAndOrientation(self.ball_id, spawn_pos, [0,0,0,1])
         p.resetBaseVelocity(self.ball_id, [0,0,0], [0,0,0])
         self.current_tilt_x = self.min_tilt
         self.current_tilt_y = self.min_tilt

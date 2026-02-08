@@ -113,6 +113,20 @@ class MazeGenerator:
                         queue.append((nx, ny))
         return False
 
+    def get_random_valid_cell(self):
+        valid_cells = []
+        for y in range(self.height):
+            for x in range(self.width):
+                # 0 is Path, we avoid the arrival zone (3) for spawning if possible
+                if self.grid[y][x] == 0:
+                    # Map grid coordinates to the same coordinate system used in setup_world (cx, cy)
+                    valid_cells.append((x, y))
+        
+        if not valid_cells:
+            return (1, 1) # Default start
+            
+        return self.rng.choice(valid_cells)
+
 if __name__ == "__main__":
     # Quick test
     gen = MazeGenerator(15, 15)

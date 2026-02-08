@@ -52,12 +52,15 @@ class DQNAgent:
         self.steps_done = 0
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.998 # Slower decay for episode-based training (reaches min at ~2000 eps)
 
-    def select_action(self, state):
+    def select_action(self, state, epsilon=None):
         self.steps_done += 1
-        # Epsilon decay
-        if random.random() < self.epsilon:
+        
+        # Use provided epsilon if available, else use the agent's internal decay
+        eps = epsilon if epsilon is not None else self.epsilon
+        
+        if random.random() < eps:
             return random.randrange(self.action_dim)
         else:
             with torch.no_grad():

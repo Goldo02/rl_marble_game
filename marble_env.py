@@ -7,7 +7,7 @@ from main import MarbleGame
 class MarbleEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, gui=False, action_repeat=8, max_steps=5000, seed=100):
+    def __init__(self, gui=False, action_repeat=8, max_steps=5000, seed=100, random_spawn=False):
         super(MarbleEnv, self).__init__()
         
         # Initialize simulation
@@ -16,6 +16,7 @@ class MarbleEnv(gym.Env):
         self.max_steps = max_steps
         self.current_steps = 0
         self.seed = seed
+        self.random_spawn = random_spawn
         
         self.game = MarbleGame(gui=gui, auto_reset=False, seed=seed)
         
@@ -31,7 +32,7 @@ class MarbleEnv(gym.Env):
         self.tilt_x = 0.0
         self.tilt_y = 0.0
         self.max_tilt = math.radians(10) # 10 degrees
-        self.delta_tilt = 0.002 # Per step change (smaller for smoothness)
+        self.delta_tilt = 0.01 # Per step change (more responsive)
         
         # Action mapping
         self.action_map = [
@@ -45,7 +46,7 @@ class MarbleEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.game.reset()
+        self.game.reset(random_spawn=self.random_spawn)
         self.tilt_x = 0.0
         self.tilt_y = 0.0
         self.current_steps = 0
@@ -95,9 +96,9 @@ class MarbleEnv(gym.Env):
         # Terminal rewards
         if done:
             if info.get('cause') == 'win':
-                reward += 100.0
+                reward += 1000.0
             elif info.get('cause') == 'fell':
-                reward -= 100.0
+                reward -= 1000.0
         
         terminated = done
         truncated = self.current_steps >= self.max_steps
