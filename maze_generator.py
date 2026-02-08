@@ -9,11 +9,12 @@ class MazeGenerator:
     2 = Hole
     3 = Arrival (Goal)
     """
-    def __init__(self, width, height):
+    def __init__(self, width, height, seed=None):
         # Ensure dimensions are odd for DFS wall carving
         self.width = width if width % 2 != 0 else width + 1
         self.height = height if height % 2 != 0 else height + 1
         self.grid = [[1 for _ in range(self.width)] for _ in range(self.height)]
+        self.rng = random.Random(seed)
         
     def generate(self):
         # 1. Carve maze using DFS
@@ -33,7 +34,7 @@ class MazeGenerator:
     def _carve_dfs(self, x, y):
         self.grid[y][x] = 0
         directions = [(0, 2), (0, -2), (2, 0), (-2, 0)]
-        random.shuffle(directions)
+        self.rng.shuffle(directions)
         
         for dx, dy in directions:
             nx, ny = x + dx, y + dy
@@ -49,8 +50,8 @@ class MazeGenerator:
         while count < num_holes and attempts < 1000:
             attempts += 1
             # Random candidate for a hole (avoiding the immediate start/end)
-            hx = random.randint(2, self.width - 3)
-            hy = random.randint(2, self.height - 3)
+            hx = self.rng.randint(2, self.width - 3)
+            hy = self.rng.randint(2, self.height - 3)
             
             # Check if it's currently a path or a wall (we'll convert it to a "spiazzo")
             # We want to make sure the hole is at (hx, hy) and the 3x3 around it is path

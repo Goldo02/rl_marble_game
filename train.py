@@ -49,6 +49,7 @@ def train(
     )
     
     print(f"Device: {agent.device.type.upper()}")
+    print(f"Maze Seed: {env.seed}")
     print("="*30 + "\n")
     
     total_steps = 0

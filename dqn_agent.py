@@ -33,7 +33,7 @@ class ReplayBuffer:
         return len(self.buffer)
 
 class DQNAgent:
-    def __init__(self, state_dim, action_dim, lr=1e-4, gamma=0.99, buffer_size=10000, batch_size=64):
+    def __init__(self, state_dim, action_dim, lr=1e-4, gamma=0.99, buffer_size=10000, batch_size=128):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.gamma = gamma
@@ -76,10 +76,8 @@ class DQNAgent:
         if len(self.memory) < self.batch_size:
             return
         
-        try:
-            state, action, reward, next_state, done = self.memory.sample(self.batch_size)
-        except ValueError:
-            return
+        # Sample directly to numpy arrays for efficiency
+        state, action, reward, next_state, done = self.memory.sample(self.batch_size)
 
         state = torch.FloatTensor(np.array(state)).to(self.device)
         action = torch.LongTensor(action).unsqueeze(1).to(self.device)

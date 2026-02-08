@@ -7,7 +7,7 @@ from main import MarbleGame
 class MarbleEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, gui=False, action_repeat=4, max_steps=5000):
+    def __init__(self, gui=False, action_repeat=8, max_steps=5000, seed=100):
         super(MarbleEnv, self).__init__()
         
         # Initialize simulation
@@ -15,8 +15,9 @@ class MarbleEnv(gym.Env):
         self.action_repeat = action_repeat
         self.max_steps = max_steps
         self.current_steps = 0
+        self.seed = seed
         
-        self.game = MarbleGame(gui=gui, auto_reset=False)
+        self.game = MarbleGame(gui=gui, auto_reset=False, seed=seed)
         
         # Action Space: 9 discrete actions
         self.action_space = spaces.Discrete(9)

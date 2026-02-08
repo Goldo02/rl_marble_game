@@ -7,9 +7,10 @@ from maze_generator import MazeGenerator
 from mesh_utils import ObjBuilder
 
 class MarbleGame:
-    def __init__(self, gui=True, auto_reset=True):
+    def __init__(self, gui=True, auto_reset=True, seed=100):
         self.gui = gui
         self.auto_reset = auto_reset
+        self.seed = seed
         if self.gui:
             self.client_id = p.connect(p.GUI)
         else:
@@ -48,7 +49,7 @@ class MarbleGame:
         
     def setup_world(self):
         # 1. Generate Maze
-        self.maze_gen = MazeGenerator(self.maze_width, self.maze_height)
+        self.maze_gen = MazeGenerator(self.maze_width, self.maze_height, seed=self.seed)
         self.grid = self.maze_gen.generate()
         
         # 2. Build Mesh
