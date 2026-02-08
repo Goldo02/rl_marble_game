@@ -7,8 +7,9 @@ from maze_generator import MazeGenerator
 from mesh_utils import ObjBuilder
 
 class MarbleGame:
-    def __init__(self, gui=True):
+    def __init__(self, gui=True, auto_reset=True):
         self.gui = gui
+        self.auto_reset = auto_reset
         if self.gui:
             self.client_id = p.connect(p.GUI)
         else:
@@ -92,11 +93,6 @@ class MarbleGame:
                 
                 elif cell == 3: # Arrival
                     self.arrival_pos = np.array([cx, cy, 0.02])
-                    # Visual marker (Magenta tile, high contrast)
-                    vis_shapes.append(p.GEOM_BOX)
-                    vis_extents.append([self.cell_size/2, self.cell_size/2, 0.02])
-                    vis_positions.append([cx, cy, 0.02])
-                    vis_colors.append([1, 0, 1, 1])
                 
                 if x == 1 and y == 1:
                     self.start_pos = [cx, cy, 0.5] # Higher spawn to land safely
@@ -147,6 +143,7 @@ class MarbleGame:
         )
         # Fix marker to board
         p.createConstraint(self.board_id, -1, self.marker_id, -1, p.JOINT_FIXED, [0,0,0], self.arrival_pos, [0,0,0])
+        
         # 3. Ball (Marble)
         radius = 0.08
         ball_col = p.createCollisionShape(p.GEOM_SPHERE, radius=radius)
@@ -173,36 +170,45 @@ class MarbleGame:
         
         p.changeDynamics(self.board_id, -1, lateralFriction=0.1, restitution=0.2)
 
-    def step(self):
-        keys = p.getKeyboardEvents()
-        
-        # Determine targets
-        if self.stabilize_counter > 0:
-            target_x = 0
-            target_y = 0
-            self.stabilize_counter -= 1
+    def step(self, tilt_x=None, tilt_y=None):
+        if tilt_x is not None and tilt_y is not None:
+            # RL Mode: directly set tilt
+            self.current_tilt_x = tilt_x
+            self.current_tilt_y = tilt_y
         else:
-            target_x = self.min_tilt
-            target_y = self.min_tilt
-        
-        # Up Arrow for X-axis tilt positive (+10)
-        if p.B3G_RIGHT_ARROW in keys and keys[p.B3G_RIGHT_ARROW] & p.KEY_IS_DOWN:
-            target_x = self.max_tilt
+            # Manual Mode: keyboard input
+            keys = p.getKeyboardEvents()
             
-        # Right Arrow for Y-axis tilt positive (+10)
-        if p.B3G_DOWN_ARROW in keys and keys[p.B3G_DOWN_ARROW] & p.KEY_IS_DOWN:
-            target_y = self.max_tilt
+            # Determine targets
+            if self.stabilize_counter > 0:
+                target_x = 0
+                target_y = 0
+                self.stabilize_counter -= 1
+            else:
+                target_x = self.min_tilt
+                target_y = self.min_tilt
             
-        # Smooth interpolation
-        if self.current_tilt_x < target_x:
-            self.current_tilt_x = min(target_x, self.current_tilt_x + self.tilt_speed)
-        elif self.current_tilt_x > target_x:
-            self.current_tilt_x = max(target_x, self.current_tilt_x - self.tilt_speed)
-            
-        if self.current_tilt_y < target_y:
-            self.current_tilt_y = min(target_y, self.current_tilt_y + self.tilt_speed)
-        elif self.current_tilt_y > target_y:
-            self.current_tilt_y = max(target_y, self.current_tilt_y - self.tilt_speed)
+            # Control with Arrows
+            if p.B3G_RIGHT_ARROW in keys and keys[p.B3G_RIGHT_ARROW] & p.KEY_IS_DOWN:
+                target_x = self.max_tilt
+            if p.B3G_LEFT_ARROW in keys and keys[p.B3G_LEFT_ARROW] & p.KEY_IS_DOWN:
+                target_x = self.min_tilt
+                
+            if p.B3G_DOWN_ARROW in keys and keys[p.B3G_DOWN_ARROW] & p.KEY_IS_DOWN:
+                target_y = self.max_tilt
+            if p.B3G_UP_ARROW in keys and keys[p.B3G_UP_ARROW] & p.KEY_IS_DOWN:
+                target_y = self.min_tilt
+                
+            # Smooth interpolation
+            if self.current_tilt_x < target_x:
+                self.current_tilt_x = min(target_x, self.current_tilt_x + self.tilt_speed)
+            elif self.current_tilt_x > target_x:
+                self.current_tilt_x = max(target_x, self.current_tilt_x - self.tilt_speed)
+                
+            if self.current_tilt_y < target_y:
+                self.current_tilt_y = min(target_y, self.current_tilt_y + self.tilt_speed)
+            elif self.current_tilt_y > target_y:
+                self.current_tilt_y = max(target_y, self.current_tilt_y - self.tilt_speed)
             
         # Apply orientation to board
         # In PyBullet, Euler are [roll, pitch, yaw]. 
@@ -221,23 +227,35 @@ class MarbleGame:
         rot_mat = np.array(rot_mat).reshape(3, 3)
         world_arrival = rot_mat @ self.local_arrival_pos + np.array(pos_board)
         
+        # Terminal checks
+        done = False
+        info = {}
+        dist = np.linalg.norm(np.array(ball_pos) - world_arrival)
+        info['dist'] = dist
+
         # Fall check (Hole)
         # Check if ball is below the board center and far from the start
         if ball_pos[2] < -0.5:
-            print("GAME OVER - Fell into a hole!")
-            time.sleep(1)
-            self.reset()
+            done = True
+            info['cause'] = 'fell'
+            if self.auto_reset:
+                print("GAME OVER - Fell into a hole!")
+                time.sleep(1)
+                self.reset()
             
         # Win check
-        dist = np.linalg.norm(np.array(ball_pos) - world_arrival)
-        # Check if 3D distance is small enough (ball radius is 0.08, cell is 0.2)
         if dist < (self.cell_size * 0.8):
-            print("YOU WIN! - Reached the Goal!")
-            time.sleep(2)
-            self.reset()
+            done = True
+            info['cause'] = 'win'
+            if self.auto_reset:
+                print("YOU WIN! - Reached the Goal!")
+                time.sleep(2)
+                self.reset()
             
         if self.gui:
             time.sleep(self.time_step)
+
+        return done, info
 
     def reset(self):
         p.resetBasePositionAndOrientation(self.ball_id, self.start_pos, [0,0,0,1])
@@ -245,6 +263,11 @@ class MarbleGame:
         self.current_tilt_x = self.min_tilt
         self.current_tilt_y = self.min_tilt
         p.resetBasePositionAndOrientation(self.board_id, [0,0,0], p.getQuaternionFromEuler([self.min_tilt, self.min_tilt, 0]))
+
+    def get_state(self):
+        pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+        lin_vel, _ = p.getBaseVelocity(self.ball_id)
+        return pos, lin_vel
 
 if __name__ == "__main__":
     game = MarbleGame()
