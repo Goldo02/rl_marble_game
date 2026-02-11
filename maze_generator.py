@@ -1,5 +1,6 @@
 import random
 from collections import deque
+import numpy as np
 
 class MazeGenerator:
     """
@@ -112,6 +113,67 @@ class MazeGenerator:
                         visited.add((nx, ny))
                         queue.append((nx, ny))
         return False
+
+    def get_bfs_distance_map(self):
+        """
+        Calculates a distance map from the goal (3) using BFS.
+        Returns a 2D array where each cell contains the distance to the goal.
+        """
+        # Find arrival
+        goal = None
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y][x] == 3:
+                    goal = (x, y)
+                    break
+            if goal: break
+            
+        if not goal: return None
+        
+        # Initialize distance map with a large value
+        dist_map = np.full((self.height, self.width), 999, dtype=int)
+        dist_map[goal[1]][goal[0]] = 0
+        
+        # BFS starting FROM the goal
+        queue = deque([goal])
+        visited = {goal}
+        
+        while queue:
+            cx, cy = queue.popleft()
+            current_dist = dist_map[cy][cx]
+            
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < self.width and 0 <= ny < self.height:
+                    # Valid path: 0 (Path) or 1 (Start - wait, Start is just a pos, 1 is Wall).
+                    # Actually logic: 0=Path, 1=Wall, 2=Hole, 3=Arrival.
+                    # We can traverse 0 and 1 (if 1 was start, but 1 is WALL).
+                    # The original code had `self.grid[ny][nx] == 1` which was WRONG (treating walls as walkable).
+                    # We should only traverse 0 (Path) and 3 (Arrival) and potentially the start position if it was marked special, 
+                    # but start is usually on a 0.
+                    # Let's verify what 1 is. Class docstring says: 1 = Wall.
+                    # So we MUST NOT traverse 1.
+                    
+                    if (nx, ny) not in visited:
+                        cell_value = self.grid[ny][nx]
+                        # We can walk on Path (0), Arrival (3), and maybe if Start was marked separately.
+                        # But standard walls (1) and Holes (2) are obstacles for walking.
+                        # Note regarding Holes (2): Physics-wise, you fall. So BFS should probably avoid them 
+                        # OR treat them as valid paths but high risk? 
+                        # If we want the agent to learn to jump over them, maybe? 
+                        # But for now, let's treat them as non-traversable for the *distance map* 
+                        # so the gradient guides around them if possible. 
+                        # If a hole is blocking the ONLY path, then BFS will fail, which is correct (unsolvable).
+                        # But `_add_holes_in_spiazzi` checks solvability, likely assuming 2 is NOT traversable.
+                        # Let's check `is_solvable`: `if (self.grid[ny][nx] == 0 or self.grid[ny][nx] == 3):`
+                        # So `is_solvable` treats 0 and 3 as walkable. 2 and 1 are NOT.
+                        
+                        if cell_value == 0 or cell_value == 3:
+                            dist_map[ny][nx] = current_dist + 1
+                            visited.add((nx, ny))
+                            queue.append((nx, ny))
+                        
+        return dist_map
 
     def get_random_valid_cell(self):
         valid_cells = []
