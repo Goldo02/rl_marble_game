@@ -2,19 +2,25 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import math
+import random
 from marble_game import MarbleGame
 
 class ExplorationHeatmap:
     def __init__(self, size=20, bounds=2.0):
         self.size = size
+        self.escape_mode = False
+        self.escape_steps_remaining = 0
         self.bounds = bounds
-        self.grid = np.zeros((size, size), dtype=int)
+        self.grid = np.zeros((size, size), dtype=np.float32)
         self.episode_visited = set()  # Track visits in current episode
         
     def get_indices(self, x, y):
         # Map [-bounds, bounds] to [0, size-1]
+        # X: [-bounds, bounds] -> [0, size-1] (Left to Right)
         i = int((x + self.bounds) / (2 * self.bounds) * self.size)
-        j = int((y + self.bounds) / (2 * self.bounds) * self.size)
+        # Y: [-bounds, bounds] -> [size-1, 0] (Bottom to Top)
+        # We invert it so Y+ (North) is at the top of the grid (index 0)
+        j = int((self.bounds - y) / (2 * self.bounds) * self.size)
         return np.clip(i, 0, self.size - 1), np.clip(j, 0, self.size - 1)
     
     def update(self, x, y):
@@ -34,16 +40,16 @@ class ExplorationHeatmap:
     def decay_visitation(self, x, y, factor=0.5):
         """Reduces visitation count in a specific area (e.g., after a failure)"""
         i, j = self.get_indices(x, y)
-        self.grid[i, j] = int(self.grid[i, j] * factor)
+        self.grid[j, i] *= factor
 
     def global_decay(self, factor=0.99):
         """Slowly reduces all visitation counts to keep exploration dynamic"""
-        self.grid = (self.grid * factor).astype(int)
+        self.grid *= factor
 
 class MarbleEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, gui=False, action_repeat=8, max_steps=2500, seed=100, random_spawn=False):
+    def __init__(self, gui=False, action_repeat=12, max_steps=2500, seed=100, random_spawn=False):
         super(MarbleEnv, self).__init__()
         
         # Initialize simulation
@@ -53,6 +59,11 @@ class MarbleEnv(gym.Env):
         self.current_steps = 0
         self.seed = seed
         self.random_spawn = random_spawn
+        
+        # Debug Metrics for HUD
+        self.current_episode = 0
+        self.current_epsilon = 1.0
+        self.cumulative_episode_reward = 0.0
         
         self.game = MarbleGame(gui=gui, auto_reset=False, seed=seed)
         self.heatmap = ExplorationHeatmap(size=20, bounds=2.0)
@@ -72,7 +83,7 @@ class MarbleEnv(gym.Env):
         self.tilt_x = 0.0
         self.tilt_y = 0.0
         self.max_tilt = math.radians(10) # 10 degrees
-        self.delta_tilt = 0.01 # Per step change (more responsive)
+        self.delta_tilt = 0.0125 # Per step change (more responsive)
         
         # Action mapping
         self.action_map = [
@@ -90,12 +101,15 @@ class MarbleEnv(gym.Env):
         offset_y = -(self.game.maze_height * self.game.cell_size) / 2
         
         gx = int((x - offset_x) / self.game.cell_size)
-        gy = int((y - offset_y) / self.game.cell_size)
+        # Invert Y: Y+ in simulation is Top, which should be index 0 in grid
+        gy = int(((-offset_y) - y) / self.game.cell_size)
         
         return np.clip(gx, 0, self.game.maze_width - 1), np.clip(gy, 0, self.game.maze_height - 1)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self.escape_mode = False
+        self.escape_steps_remaining = 0
         self.game.reset(random_spawn=self.random_spawn)
         self.tilt_x = 0.0
         self.tilt_y = 0.0
@@ -131,18 +145,29 @@ class MarbleEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
-        self.current_steps += 1
-        
-        # Decode action
         d_tilt_x_idx, d_tilt_y_idx = self.action_map[action]
+
+        if self.escape_mode:
+            self.tilt_x = self.escape_tilt_x
+            self.tilt_y = self.escape_tilt_y
+            
+            self.escape_steps_remaining -= 1
+            if self.escape_steps_remaining <= 0:
+                self.escape_mode = False
+                self.stagnation_counter = 0
+                print("[ESCAPE MODE OFF]")
         
-        # Update tilt
-        self.tilt_x += d_tilt_x_idx * self.delta_tilt
-        self.tilt_y += d_tilt_y_idx * self.delta_tilt
+        else:
+            # Update tilt
+            self.tilt_y += d_tilt_x_idx * self.delta_tilt  # Roll = destra/sinistra
+            self.tilt_x += d_tilt_y_idx * self.delta_tilt  # Pitch = avanti/indietro
         
+        self.current_steps += 1
+
         # Clip tilt
         self.tilt_x = np.clip(self.tilt_x, -self.max_tilt, self.max_tilt)
         self.tilt_y = np.clip(self.tilt_y, -self.max_tilt, self.max_tilt)
+        
         
         # Step simulation multiple times (Frame Skipping)
         done = False
@@ -195,7 +220,8 @@ class MarbleEnv(gym.Env):
             offset_x = -(self.game.maze_width * self.game.cell_size) / 2
             offset_y = -(self.game.maze_height * self.game.cell_size) / 2
             target_x = offset_x + (best_nx * self.game.cell_size) + (self.game.cell_size / 2)
-            target_y = offset_y + (best_ny * self.game.cell_size) + (self.game.cell_size / 2)
+            # Inverted Y mapping for world coordinate
+            target_y = (-offset_y) - (best_ny * self.game.cell_size) - (self.game.cell_size / 2)
             
         # 3. Calculate distance to this immediate LOCAL target
         dist_to_local_target = np.linalg.norm([ball_pos[0] - target_x, ball_pos[1] - target_y])
@@ -217,7 +243,7 @@ class MarbleEnv(gym.Env):
         else:
             # 2. Path Movement: Calculate discrete reward for cell changes
             # We only give reward if current_bfs is a valid path distance
-            potential_reward = (self.prev_bfs_dist - current_bfs_raw) * 5.0
+            potential_reward = (self.prev_bfs_dist - current_bfs_raw) * 15.0
             
             # 3. Prevent Farming: Only update prev_bfs_dist if we are on a valid path
             self.prev_bfs_dist = current_bfs_raw
@@ -234,12 +260,25 @@ class MarbleEnv(gym.Env):
         self.prev_dist_to_local = dist_to_local_target
         
         # Weighted sum: Big reward for cell change, small reward for movement within cell
-        extrinsic_reward = potential_reward + (local_improvement * 1.0)
+        extrinsic_reward = potential_reward + (local_improvement * 2.50)
         
-        # Removed living penalty to avoid accumulating large negative rewards
+        # Living Penalty: Strong incentive for speed (total -1000 possible over 5000 steps)
+        living_penalty = -0.2
+        extrinsic_reward += living_penalty
+        
+        # Velocity Reward: CONDITIONAL on making progress
+        # Only reward speed when moving toward the goal (BFS progress)
+        if potential_reward > 0.5:  # Made significant progress toward goal
+            velocity_reward = 0.3 * velocity_magnitude  # Moderate bonus for fast progress
+            extrinsic_reward += velocity_reward
+        elif potential_reward < -0.5:  # Moving away from goal
+            # Small penalty for fast movement in wrong direction
+            velocity_penalty = -0.1 * velocity_magnitude
+            extrinsic_reward += velocity_penalty
+        # If potential_reward is near 0 (same cell/minor movement), no velocity reward/penalty
         
         # Stagnation Penalty: Detect if ball is stuck (low velocity)
-        if velocity_magnitude < 0.05:  # Threshold for "stuck"
+        if velocity_magnitude < 0.2:  # Threshold for "stuck"
             self.stagnation_counter += 1
             # Constant penalty to avoid quadratic explosion
             # Adjusted for longer-term survival: -0.01
@@ -259,34 +298,52 @@ class MarbleEnv(gym.Env):
         info['intrinsic_reward'] = intrinsic_reward
         info['extrinsic_reward'] = extrinsic_reward
         info['stagnation_counter'] = self.stagnation_counter
+        info['velocity'] = velocity_magnitude
         
+        if not done and self.stagnation_counter >= 125 and not self.escape_mode:
+            self.escape_mode = True
+            self.escape_steps_remaining = 24  # 24 step ≈ 2 secondi se action_repeat=12
+            
+            
+            direction = random.choice([
+                (1, 0), (-1, 0),
+                (0, 1), (0, -1)
+            ])
+            
+            ESCAPE_BOOST = 6.0
+            self.escape_tilt_x = direction[1] * self.delta_tilt * ESCAPE_BOOST
+            self.escape_tilt_y = direction[0] * self.delta_tilt * ESCAPE_BOOST
+            
+            print(f"[ESCAPE MODE ON] dir={direction}")
+
         # Terminal rewards
         if done:
             if info.get('cause') == 'win':
                 # Massive win bonus
-                # Increased to 50.0 to make it the primary target
-                win_bonus = 50.0
+                win_bonus = 500.0
                 reward += win_bonus
                 extrinsic_reward += win_bonus
                 
-                # Speed bonus: reward faster solutions
-                # Old: 5000.0 -> New: 1.0
-                speed_bonus = 1.0 * (1.0 - self.current_steps / self.max_steps)
-                reward += speed_bonus
-                extrinsic_reward += speed_bonus
-                
             elif info.get('cause') == 'fell':
-                # Increased Fall Penalty (was -5.0)
-                fall_penalty = -20.0
-                
+                # Increased Fall Penalty to discourage suicide strategies
+                fall_penalty = -50.0
                 reward += fall_penalty
                 extrinsic_reward += fall_penalty
                 
-                # RECOVERY LOGIC: If we fell, we want to RESET the visitation count here
-                # so that epsilon goes back UP and the agent tries something different next time
-                self.heatmap.decay_visitation(ball_pos[0], ball_pos[1], factor=0.1) # Aggressive reduction
+                # RECOVERY LOGIC: Decay visitation if we fell
+                self.heatmap.decay_visitation(ball_pos[0], ball_pos[1], factor=0.1)
+            
+            #elif info.get('cause') == 'stuck':
+                # Stagnation penalty (incastro)
+            #    stuck_penalty = -25.0
+            #    reward += stuck_penalty
+            #    extrinsic_reward += stuck_penalty
+                
+                # RECOVERY LOGIC: Decay visitation if stuck
+            #    self.heatmap.decay_visitation(ball_pos[0], ball_pos[1], factor=0.1)
         
         terminated = done
+            
         truncated = self.current_steps >= self.max_steps
         
         # Truncation penalty: discourage reaching max steps without winning
@@ -295,8 +352,10 @@ class MarbleEnv(gym.Env):
             reward += truncation_penalty
             extrinsic_reward += truncation_penalty
         
-        # CLAMP REWARD: Force reward to be in [-50, 50] range
-        reward = np.clip(reward, -50.0, 50.0)
+        # CLAMP REWARD: Force reward to be in a wide range to accommodate high bonuses
+        reward = np.clip(reward, -1000.0, 1000.0)
+        
+        print(f"Azione: {action}, d_tilt: ({d_tilt_x_idx}, {d_tilt_y_idx}), tilt: ({self.tilt_x:.3f}, {self.tilt_y:.3f})")
                 
         return obs, reward, terminated, truncated, info
 
@@ -341,28 +400,17 @@ class MarbleEnv(gym.Env):
         i, j = self.heatmap.get_indices(pos[0], pos[1])
         return self.heatmap.grid[j, i]
 
-    def get_action_mask(self):
-        """
-        Returns a boolean mask of valid actions.
-        True means the action is valid, False means it would result in a wall collision.
-        """
-        pos, _ = self.game.get_state()
-        gx, gy = self.get_grid_indices(pos[0], pos[1])
-        mask = np.ones(self.action_space.n, dtype=bool)
-        
-        for i, (dx_idx, dy_idx) in enumerate(self.action_map):
-            # Calculate target grid cell for this action
-            # Note: dx_idx is change in TILT, which roughly corresponds to acceleration direction
-            # For simplicity in masking, we look at immediate neighbors in that direction
-            nx, ny = gx + dx_idx, gy + dy_idx
-            
-            # Check bounds and walls
-            is_valid = False
-            if 0 <= nx < self.game.maze_width and 0 <= ny < self.game.maze_height:
-                cell_value = self.game.maze_gen.grid[ny][nx]
-                if cell_value != 1: # Not a Wall
-                    is_valid = True
-            
-            mask[i] = is_valid
-                    
         return mask
+
+    def set_debug_metrics(self, episode=None, epsilon=None, reward=None, stagnation=None, velocity=None, steps=None):
+        """Pass metrics to game UI"""
+        info = {}
+        if episode is not None: info['episode'] = episode
+        if epsilon is not None: info['epsilon'] = epsilon
+        if reward is not None: info['reward'] = reward
+        if stagnation is not None: info['stagnation'] = stagnation
+        if velocity is not None: info['velocity'] = velocity
+        if steps is not None: info['steps'] = steps
+        
+        if self.game.gui:
+            self.game.update_debug_ui(info)

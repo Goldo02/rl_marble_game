@@ -82,7 +82,8 @@ class DQNAgent:
         # Greedy Action (Exploitation)
         else:
             with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                # Convert state to tensor safely
+                state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.policy_net(state_tensor)
                 
                 if action_mask is not None:
@@ -129,11 +130,20 @@ class DQNAgent:
             next_state = next_state + s_next_state
             done = done + s_done
 
-        state = torch.FloatTensor(np.array(state)).to(self.device)
-        action = torch.LongTensor(action).unsqueeze(1).to(self.device)
-        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)
-        next_state = torch.FloatTensor(np.array(next_state)).to(self.device)
-        done = torch.FloatTensor(done).unsqueeze(1).to(self.device)
+        # Convert to tensors with high robustness
+        def safe_tensor(data, dtype_np, device, is_long=False):
+            arr = np.array(data)
+            if arr.dtype == object: # Means inconsistent shapes/types in list
+                arr = np.stack(data)
+            arr = arr.astype(dtype_np)
+            t = torch.from_numpy(arr).to(device)
+            return t.long() if is_long else t.float()
+
+        state = safe_tensor(state, np.float32, self.device)
+        action = safe_tensor(action, np.int64, self.device, is_long=True).unsqueeze(1)
+        reward = safe_tensor(reward, np.float32, self.device).unsqueeze(1)
+        next_state = safe_tensor(next_state, np.float32, self.device)
+        done = safe_tensor(done, np.float32, self.device).unsqueeze(1)
 
         curr_q = self.policy_net(state).gather(1, action)
         

@@ -12,7 +12,7 @@ def visualize_heatmap(heatmap_grid, save_path="heatmap.png", title="Exploration 
         title: Title for the plot
     """
     plt.figure(figsize=(10, 10))
-    plt.imshow(heatmap_grid.T, cmap='hot', interpolation='nearest', origin='lower')
+    plt.imshow(heatmap_grid, cmap='hot', interpolation='nearest', origin='upper')
     plt.colorbar(label='Visit Count')
     plt.title(title)
     plt.xlabel('Grid X')

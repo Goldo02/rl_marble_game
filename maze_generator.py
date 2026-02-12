@@ -9,6 +9,7 @@ class MazeGenerator:
     1 = Wall
     2 = Hole
     3 = Arrival (Goal)
+    4 = Start
     """
     def __init__(self, width, height, seed=None):
         # Ensure dimensions are odd for DFS wall carving
@@ -25,7 +26,10 @@ class MazeGenerator:
         # Find a suitable spot for arrival near the end
         self.grid[self.height - 2][self.width - 2] = 3
         
-        # 3. Add Holes in "Spiazzi"
+        # 3. Add Explicit Start point at (1, 1) - Top Left
+        self.grid[1][1] = 4
+        
+        # 4. Add Holes in "Spiazzi"
         # We'll add a few holes, each surrounded by a 3x3 open area
         num_holes = max(5, (self.width * self.height) // 50)
         self._add_holes_in_spiazzi(num_holes)
@@ -84,15 +88,18 @@ class MazeGenerator:
                     self.grid[y_coord][x_coord] = val
 
     def is_solvable(self):
-        start = (1, 1)
         # Find arrival
         goal = None
+        start = (1, 1) # Default top-left
         for y in range(self.height):
             for x in range(self.width):
                 if self.grid[y][x] == 3:
                     goal = (x, y)
-                    break
-            if goal: break
+                elif self.grid[y][x] == 4:
+                    start = (x, y)
+            if goal and start != (1, 1): # If we found both and start changed
+                 # we keep going to find goal or start if not found yet
+                 pass
             
         if not goal: return False
         
@@ -108,8 +115,9 @@ class MazeGenerator:
             for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < self.width and 0 <= ny < self.height:
-                    # Path (0) or Arrival (3) are traversable. Hole (2) and Wall (1) are not.
-                    if (nx, ny) not in visited and (self.grid[ny][nx] == 0 or self.grid[ny][nx] == 3):
+                    # Path (0), Arrival (3) or Start (4) are traversable. Hole (2) and Wall (1) are not.
+                    cell = self.grid[ny][nx]
+                    if (nx, ny) not in visited and (cell == 0 or cell == 3 or cell == 4):
                         visited.add((nx, ny))
                         queue.append((nx, ny))
         return False
@@ -156,19 +164,10 @@ class MazeGenerator:
                     
                     if (nx, ny) not in visited:
                         cell_value = self.grid[ny][nx]
-                        # We can walk on Path (0), Arrival (3), and maybe if Start was marked separately.
+                        # We can walk on Path (0), Arrival (3), and Start (4).
                         # But standard walls (1) and Holes (2) are obstacles for walking.
-                        # Note regarding Holes (2): Physics-wise, you fall. So BFS should probably avoid them 
-                        # OR treat them as valid paths but high risk? 
-                        # If we want the agent to learn to jump over them, maybe? 
-                        # But for now, let's treat them as non-traversable for the *distance map* 
-                        # so the gradient guides around them if possible. 
-                        # If a hole is blocking the ONLY path, then BFS will fail, which is correct (unsolvable).
-                        # But `_add_holes_in_spiazzi` checks solvability, likely assuming 2 is NOT traversable.
-                        # Let's check `is_solvable`: `if (self.grid[ny][nx] == 0 or self.grid[ny][nx] == 3):`
-                        # So `is_solvable` treats 0 and 3 as walkable. 2 and 1 are NOT.
                         
-                        if cell_value == 0 or cell_value == 3:
+                        if cell_value == 0 or cell_value == 3 or cell_value == 4:
                             dist_map[ny][nx] = current_dist + 1
                             visited.add((nx, ny))
                             queue.append((nx, ny))
@@ -191,9 +190,12 @@ class MazeGenerator:
 
 if __name__ == "__main__":
     # Quick test
-    gen = MazeGenerator(15, 15)
+    gen = MazeGenerator(15, 15, 100)
     grid = gen.generate()
     for row in grid:
-        symbols = {0: " ", 1: "#", 2: "O", 3: "X"}
+        symbols = {0: " ", 1: "#", 2: "O", 3: "X", 4: "S"}
         print("".join(symbols[c] for c in row))
     print("Solvable:", gen.is_solvable())
+    print("Distance Map: ")
+    print(gen.get_bfs_distance_map())
+

@@ -10,13 +10,14 @@ import multiprocessing
 from torch.utils.tensorboard import SummaryWriter
 from visualize_heatmap import visualize_heatmap
 import matplotlib.pyplot as plt
+import argparse
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 
 def heatmap_to_image(heatmap_grid, title="Heatmap"):
     """Convert heatmap numpy array to image tensor for TensorBoard"""
     fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(heatmap_grid.T, cmap='hot', interpolation='nearest', origin='lower')
+    im = ax.imshow(heatmap_grid, cmap='hot', interpolation='nearest', origin='upper')
     plt.colorbar(im, ax=ax, label='Visit Count')
     ax.set_title(title)
     ax.set_xlabel('Grid X')
@@ -83,10 +84,12 @@ def train(
     gamma=0.99,
     buffer_size=100000,
     batch_size=64,
-    success_threshold=0.9, # Stop if 90% success rate
-    epsilon_threshold=0.1, # AND epsilon is low enough
-    max_steps=2500,
+    success_threshold=0.9, 
+    epsilon_threshold=0.1,
+    max_steps=5000,
     random_spawn=False,
+    gui=True,
+    seed=100,
     checkpoint_dir="checkpoints"
 ):
     # Print Parameters
@@ -100,12 +103,9 @@ def train(
     
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
-
-    # Use the seed currently set in files (100)
-    seed = 100
     
     # Create Single Environment
-    env = MarbleEnv(gui=False, max_steps=max_steps, seed=seed, random_spawn=random_spawn)
+    env = MarbleEnv(gui=gui, max_steps=max_steps, seed=seed, random_spawn=random_spawn)
     
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -164,17 +164,17 @@ def train(
             # Local epsilon is 1.0 for first visits, decaying as visits increase.
             visits = env.get_current_visits()
             # Formula: 1.0 / (1.0 + ln(visits)) ensures it stays high for a while but eventually decays
-            local_novelty_epsilon = 1.0 / (1.0 + np.log(max(1, visits)))
+            local_novelty_epsilon = 0.8 / (1.0 + np.log(max(1, visits)))
             
-            # effective_epsilon is the higher of the two
-            effective_epsilon = max(agent.epsilon, local_novelty_epsilon)
+            # DAMPENING: As the global agent epsilon decays, we also reduce the influence 
+            # of local novelty to ensure the policy eventually stabilizes (convergence).
+            novelty_factor = agent.epsilon / agent.epsilon_start
+            effective_epsilon = max(agent.epsilon, local_novelty_epsilon * novelty_factor)
+        
             
-            # 2. ACTION MASKING: 
-            # Get valid actions for current state to prevent hitting walls
-            action_mask = env.get_action_mask()
-            
-            # Select action with local epsilon and mask
-            action = agent.select_action(state, epsilon=effective_epsilon, action_mask=action_mask)
+            # Select action with local epsilon
+            action = agent.select_action(state, epsilon=effective_epsilon, action_mask=None)
+            # print("Action: ", action)
             
             # 3. Step env
             next_state, reward, terminated, truncated, info = env.step(action)
@@ -184,10 +184,24 @@ def train(
             # Add to local buffer for oversampling
             episode_buffer.append((state, action, reward, next_state, terminated or truncated))
             
-            # Update counters
+            
+            # Update counters FIRST
             episode_reward += reward
             episode_steps += 1
             total_steps += 1
+            
+            
+            # Update HUD Metrics if GUI is enabled (throttled to every 10 steps for performance)
+            if env.gui and episode_steps > 0 and episode_steps % 10 == 0:
+                env.set_debug_metrics(
+                    episode=episodes_completed + 1, 
+                    epsilon=effective_epsilon, 
+                    reward=episode_reward,
+                    stagnation=info.get('stagnation_counter', 0),
+                    velocity=info.get('velocity', 0.0),
+                    steps=episode_steps
+                )
+            
             state = next_state
             
             # Log epsilon to TensorBoard occasionally (too noisy for every step)
@@ -329,4 +343,23 @@ def train(
     print("Training finished!")
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train DQN Agent for Marble Game")
+    parser.add_argument("--num_episodes", type=int, default=500, help="Total episodes to train")
+    parser.add_argument("--max_steps", type=int, default=5000, help="Max steps per episode")
+    parser.add_argument("--no-gui", action="store_false", dest="gui", default=True, help="Disable PyBullet GUI (enabled by default)")
+    parser.add_argument("--seed", type=int, default=100, help="Random seed")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
+    parser.add_argument("--random_spawn", action="store_true", help="Randomize marble spawn point")
+    
+    args = parser.parse_args()
+    
+    train(
+        num_episodes=args.num_episodes,
+        max_steps=args.max_steps,
+        gui=args.gui,
+        seed=args.seed,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        random_spawn=args.random_spawn
+    )
