@@ -215,14 +215,14 @@ class MarbleGame:
             
             # Control with Arrows
             if p.B3G_RIGHT_ARROW in keys and keys[p.B3G_RIGHT_ARROW] & p.KEY_IS_DOWN:
-                target_x = self.max_tilt
+                target_y = self.max_tilt
             if p.B3G_LEFT_ARROW in keys and keys[p.B3G_LEFT_ARROW] & p.KEY_IS_DOWN:
-                target_x = self.min_tilt
+                target_y = self.min_tilt
                 
             if p.B3G_DOWN_ARROW in keys and keys[p.B3G_DOWN_ARROW] & p.KEY_IS_DOWN:
-                target_y = self.max_tilt
+                target_x = self.max_tilt
             if p.B3G_UP_ARROW in keys and keys[p.B3G_UP_ARROW] & p.KEY_IS_DOWN:
-                target_y = self.min_tilt
+                target_x = self.min_tilt
                 
             # Smooth interpolation
             if self.current_tilt_x < target_x:
@@ -238,7 +238,9 @@ class MarbleGame:
         # Apply orientation to board
         # In PyBullet, Euler are [roll, pitch, yaw]. 
         # We'll map tilt_x to Pitch and tilt_y to Roll.
-        orn = p.getQuaternionFromEuler([self.current_tilt_y, self.current_tilt_x, 0], physicsClientId=self.client_id)
+        #print("Titlt_x: ", self.current_tilt_x)
+        #print("Titlt_y: ", self.current_tilt_y)
+        orn = p.getQuaternionFromEuler([self.current_tilt_x, self.current_tilt_y, 0], physicsClientId=self.client_id)
         p.resetBasePositionAndOrientation(self.board_id, [0, 0, 0], orn, physicsClientId=self.client_id)
         
         p.stepSimulation(physicsClientId=self.client_id)
@@ -289,14 +291,14 @@ class MarbleGame:
             offset_x = -(self.maze_width * self.cell_size) / 2
             offset_y = -(self.maze_height * self.cell_size) / 2
             cx = offset_x + (rx * self.cell_size) + (self.cell_size / 2)
-            cy = offset_y + (ry * self.cell_size) + (self.cell_size / 2)
+            cy = (-offset_y) - (ry * self.cell_size) - (self.cell_size / 2)
             spawn_pos = [cx, cy, 0.5]
 
         p.resetBasePositionAndOrientation(self.ball_id, spawn_pos, [0,0,0,1], physicsClientId=self.client_id)
         p.resetBaseVelocity(self.ball_id, [0,0,0], [0,0,0], physicsClientId=self.client_id)
-        self.current_tilt_x = self.min_tilt
-        self.current_tilt_y = self.min_tilt
-        p.resetBasePositionAndOrientation(self.board_id, [0,0,0], p.getQuaternionFromEuler([self.min_tilt, self.min_tilt, 0], physicsClientId=self.client_id), physicsClientId=self.client_id)
+        self.current_tilt_x = 0
+        self.current_tilt_y = 0
+        p.resetBasePositionAndOrientation(self.board_id, [0,0,0], p.getQuaternionFromEuler([0, 0, 0], physicsClientId=self.client_id), physicsClientId=self.client_id)
 
     def get_state(self):
         pos, _ = p.getBasePositionAndOrientation(self.ball_id, physicsClientId=self.client_id)

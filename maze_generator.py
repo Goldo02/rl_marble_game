@@ -174,6 +174,133 @@ class MazeGenerator:
                         
         return dist_map
 
+    def get_action_mask_map(self):
+        """
+        Generates a (H, W, 9) boolean mask of valid actions.
+        True = Valid Action, False = Invalid (Blocked by Wall).
+        Action Map Indices correlate to:
+        0: (-1, -1) -> Top-Right (Wait? Check logic below)
+        1: (-1, 0)  -> Top
+        2: (-1, 1)  -> Top-Left
+        3: (0, -1)  -> Right
+        4: (0, 0)   -> Neutral
+        5: (0, 1)   -> Left
+        6: (1, -1)  -> Bottom-Right
+        7: (1, 0)   -> Bottom
+        8: (1, 1)   -> Bottom-Left
+        
+        Note on Physics Mapping (Derived):
+        d_tilt_x = -1 -> Force towards Top (Grid Y-)
+        d_tilt_x = +1 -> Force towards Bottom (Grid Y+)
+        d_tilt_y = +1 -> Force towards Left (Grid X-)
+        d_tilt_y = -1 -> Force towards Right (Grid X+)
+        """
+        # Map actions to grid direction requirements
+        # (d_tilt_x, d_tilt_y)
+        # We need to block if the action pushes us into a wall.
+        # Action Map from MarbleEnv:
+        # 0: (-1, -1), 1: (-1, 0), 2: (-1, 1)
+        # 3: (0, -1),  4: (0, 0),  5: (0, 1)
+        # 6: (1, -1),  7: (1, 0),  8: (1, 1)
+        
+        # Mapping tilts to Grid Neighbors (dx, dy)
+        # d_tilt_x=-1 -> Top (dy=-1)
+        # d_tilt_x=+1 -> Bottom (dy=+1)
+        # d_tilt_y=-1 -> Right (dx=+1)
+        # d_tilt_y=+1 -> Left (dx=-1)
+        
+        # So action components:
+        # (-1, -1) -> Top + Right (dy=-1, dx=+1)
+        # (-1, 0)  -> Top         (dy=-1, dx=0)
+        # (-1, 1)  -> Top + Left  (dy=-1, dx=-1)
+        # (0, -1)  -> Right       (dy=0,  dx=+1)
+        # (0, 0)   -> Neutral     (dy=0,  dx=0)
+        # (0, 1)   -> Left        (dy=0,  dx=-1)
+        # (1, -1)  -> Bottom + Right (dy=+1, dx=+1)
+        # (1, 0)   -> Bottom      (dy=+1, dx=0)
+        # (1, 1)   -> Bottom + Left (dy=+1, dx=-1)
+        
+        action_deltas = [
+            (-1, -1), # 0: Top-Left  (d_tilt_y=-1 -> Left)
+            (-1, 0),  # 1: Top
+            (-1, 1),  # 2: Top-Right (d_tilt_y=+1 -> Right)
+            (0, -1),  # 3: Left      (d_tilt_y=-1 -> Left)
+            (0, 0),   # 4: Neutral
+            (0, 1),   # 5: Right     (d_tilt_y=+1 -> Right)
+            (1, -1),  # 6: Bottom-Left
+            (1, 0),   # 7: Bottom
+            (1, 1)    # 8: Bottom-Right
+        ]
+        # Physics Correction:
+        # d_tilt_y = +1 (Index 5, 2, 8) -> Increases Pitch -> Rolls Right (X+). 
+        # So dx should be +1.
+        # d_tilt_y = -1 (Index 3, 0, 6) -> Decreases Pitch -> Rolls Left (X-).
+        # So dx should be -1.
+        
+        # d_tilt_x = +1 (Index 7, 6, 8) -> Increases Roll -> Rolls Bottom (Y+).
+        # So dy should be +1.
+        # d_tilt_x = -1 (Index 1, 0, 2) -> Decreases Roll -> Rolls Top (Y-).
+        # So dy should be -1.
+
+        # WAIT. My manual derivation in comments earlier:
+        # d_tilt_y = +1 -> Left (Grid X-). X- is Left?
+        # Grid X0 is Left. X+ is Right. So X- is Left. Correct.
+        # d_tilt_y = -1 -> Right (Grid X+).
+        
+        # Let's re-verify the table against MarbleEnv action_map and my derivation:
+        # Env Map:    (-1, -1) (idx 0)
+        # d_tilt_x = -1 (Top). d_tilt_y = -1 (Right).
+        # Result: Top-Right.
+        # My delta table above for 0: (-1, 1). 
+        # (dy, dx). dy=-1 (Top). dx=1 (Right). Matches.
+        
+        # Env Map:    (-1, 1) (idx 2)
+        # d_tilt_x = -1 (Top). d_tilt_y = +1 (Left).
+        # Result: Top-Left.
+        # My delta table for 2: (-1, -1).
+        # (dy, dx). dy=-1 (Top). dx=-1 (Left). Matches.
+        
+        mask_map = np.ones((self.height, self.width, 9), dtype=bool)
+        
+        for y in range(self.height):
+            for x in range(self.width):
+                # If current cell is a Wall (1), allow EVERYTHING (as per user request).
+                if self.grid[y][x] == 1:
+                    continue
+                
+                # Check neighbors for blocking
+                # We check the 4 cardinal directions. 
+                # If a logical move has a component into a wall, we block it?
+                # Or do we strictly block if the *immediate* neighbor in that direction is a wall?
+                
+                # Logic:
+                # If Top is Wall -> Mask all actions with Top component.
+                # If Right is Wall -> Mask all actions with Right component.
+                
+                top_blocked = (y > 0) and (self.grid[y-1][x] == 1)
+                bottom_blocked = (y < self.height - 1) and (self.grid[y+1][x] == 1)
+                left_blocked = (x > 0) and (self.grid[y][x-1] == 1)
+                right_blocked = (x < self.width - 1) and (self.grid[y][x+1] == 1)
+                
+                # Border checks (Treat boundaries as walls)
+                if y == 0: top_blocked = True
+                if y == self.height - 1: bottom_blocked = True
+                if x == 0: left_blocked = True
+                if x == self.width - 1: right_blocked = True
+                
+                for a_idx, (dy, dx) in enumerate(action_deltas):
+                    is_blocked = False
+                    
+                    if dy == -1 and top_blocked: is_blocked = True
+                    if dy == 1 and bottom_blocked: is_blocked = True
+                    if dx == -1 and left_blocked: is_blocked = True
+                    if dx == 1 and right_blocked: is_blocked = True
+                    
+                    if is_blocked:
+                        mask_map[y, x, a_idx] = False
+                        
+        return mask_map
+
     def get_random_valid_cell(self):
         valid_cells = []
         for y in range(self.height):

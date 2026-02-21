@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import math
 import random
+import os
 from marble_game import MarbleGame
 
 class ExplorationHeatmap:
@@ -46,6 +47,13 @@ class ExplorationHeatmap:
         """Slowly reduces all visitation counts to keep exploration dynamic"""
         self.grid *= factor
 
+    def save(self, filepath):
+        np.save(filepath, self.grid)
+
+    def load(self, filepath):
+        if os.path.exists(filepath):
+            self.grid = np.load(filepath)
+
 class MarbleEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
@@ -70,6 +78,9 @@ class MarbleEnv(gym.Env):
         
         # Pre-calculate BFS distance map for guidance
         self.bfs_map = self.game.maze_gen.get_bfs_distance_map()
+        
+        # Pre-calculate Action Mask Map
+        self.action_mask_map = self.game.maze_gen.get_action_mask_map()
         
         # Action Space: 9 discrete actions
         self.action_space = spaces.Discrete(9)
@@ -108,8 +119,6 @@ class MarbleEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.escape_mode = False
-        self.escape_steps_remaining = 0
         self.game.reset(random_spawn=self.random_spawn)
         self.tilt_x = 0.0
         self.tilt_y = 0.0
@@ -142,25 +151,22 @@ class MarbleEnv(gym.Env):
         # Reset episode-specific visitation tracker
         self.heatmap.reset_episode()
         
-        return self._get_obs(), {}
+        # Get action mask for current position
+        gx, gy = self.get_grid_indices(pos[0], pos[1])
+        # Safety check for indices
+        gx = np.clip(gx, 0, self.game.maze_width - 1)
+        gy = np.clip(gy, 0, self.game.maze_height - 1)
+        
+        mask = self.action_mask_map[gy, gx]
+        
+        return self._get_obs(), {'action_mask': mask}
 
     def step(self, action):
         d_tilt_x_idx, d_tilt_y_idx = self.action_map[action]
 
-        if self.escape_mode:
-            self.tilt_x = self.escape_tilt_x
-            self.tilt_y = self.escape_tilt_y
-            
-            self.escape_steps_remaining -= 1
-            if self.escape_steps_remaining <= 0:
-                self.escape_mode = False
-                self.stagnation_counter = 0
-                print("[ESCAPE MODE OFF]")
-        
-        else:
-            # Update tilt
-            self.tilt_y += d_tilt_x_idx * self.delta_tilt  # Roll = destra/sinistra
-            self.tilt_x += d_tilt_y_idx * self.delta_tilt  # Pitch = avanti/indietro
+        # Update tilt
+        self.tilt_y += d_tilt_y_idx * self.delta_tilt  # Roll = destra/sinistra
+        self.tilt_x += d_tilt_x_idx * self.delta_tilt  # Pitch = avanti/indietro
         
         self.current_steps += 1
 
@@ -300,21 +306,7 @@ class MarbleEnv(gym.Env):
         info['stagnation_counter'] = self.stagnation_counter
         info['velocity'] = velocity_magnitude
         
-        if not done and self.stagnation_counter >= 125 and not self.escape_mode:
-            self.escape_mode = True
-            self.escape_steps_remaining = 24  # 24 step ≈ 2 secondi se action_repeat=12
-            
-            
-            direction = random.choice([
-                (1, 0), (-1, 0),
-                (0, 1), (0, -1)
-            ])
-            
-            ESCAPE_BOOST = 6.0
-            self.escape_tilt_x = direction[1] * self.delta_tilt * ESCAPE_BOOST
-            self.escape_tilt_y = direction[0] * self.delta_tilt * ESCAPE_BOOST
-            
-            print(f"[ESCAPE MODE ON] dir={direction}")
+
 
         # Terminal rewards
         if done:
@@ -355,7 +347,14 @@ class MarbleEnv(gym.Env):
         # CLAMP REWARD: Force reward to be in a wide range to accommodate high bonuses
         reward = np.clip(reward, -1000.0, 1000.0)
         
-        print(f"Azione: {action}, d_tilt: ({d_tilt_x_idx}, {d_tilt_y_idx}), tilt: ({self.tilt_x:.3f}, {self.tilt_y:.3f})")
+        #print(f"Azione: {action}, d_tilt: ({d_tilt_x_idx}, {d_tilt_y_idx}), tilt: ({self.tilt_x:.3f}, {self.tilt_y:.3f})")
+        
+        # Add action mask to info
+        ball_pos, _ = self.game.get_state()
+        gx, gy = self.get_grid_indices(ball_pos[0], ball_pos[1])
+        gx = np.clip(gx, 0, self.game.maze_width - 1)
+        gy = np.clip(gy, 0, self.game.maze_height - 1)
+        info['action_mask'] = self.action_mask_map[gy, gx]
                 
         return obs, reward, terminated, truncated, info
 
@@ -393,6 +392,12 @@ class MarbleEnv(gym.Env):
     @property
     def heatmap_grid(self):
         return self.heatmap.grid
+
+    def save_heatmap(self, filepath):
+        self.heatmap.save(filepath)
+
+    def load_heatmap(self, filepath):
+        self.heatmap.load(filepath)
 
     def get_current_visits(self):
         """Returns the visitation count of the current ball position"""

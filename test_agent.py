@@ -15,7 +15,7 @@ def test(checkpoint_path="checkpoints/dqn_marble_best.pth", num_episodes=5):
     action_dim = env.action_space.n
     
     # Initialize agent
-    agent = DQNAgent(state_dim, action_dim)
+    agent = DQNAgent(state_dim, action_dim, persistence=5)
     
     # Load model
     if os.path.exists(checkpoint_path):
@@ -28,16 +28,18 @@ def test(checkpoint_path="checkpoints/dqn_marble_best.pth", num_episodes=5):
     p.resetDebugVisualizerCamera(cameraDistance=5.5, cameraYaw=0, cameraPitch=-89.9, cameraTargetPosition=[0,0,0])
 
     for ep in range(num_episodes):
-        state, _ = env.reset()
+        state, info = env.reset()
+        agent.reset_sticky()
         episode_reward = 0
-        done = False
         steps = 0
+        done = False
         
         print(f"\nStarting Episode {ep + 1}")
         
         while not done and steps < 5000:
-            # Select action (greedy)
-            action = agent.select_action(state, epsilon=0.00)
+            # Select action (greedy) with action mask
+            action_mask = info.get('action_mask', None)
+            action = agent.select_action(state, epsilon=0.00, action_mask=action_mask)
             
             # Step environment
             next_state, reward, terminated, truncated, info = env.step(action)

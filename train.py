@@ -44,14 +44,16 @@ def run_evaluation(env, agent, num_episodes=10, max_steps=5000):
     eval_steps = []
     
     for _ in range(num_episodes):
-        state, _ = env.reset()
+        state, info = env.reset()
+        agent.reset_sticky()
         episode_reward = 0
         episode_steps = 0
         is_win = False
         
         for _ in range(max_steps):
-            # Deterministic action (greedy)
-            action = agent.select_action(state, epsilon=0.0)
+            # Deterministic action (greedy) with action mask
+            action_mask = info.get('action_mask', None)
+            action = agent.select_action(state, epsilon=0.0, action_mask=action_mask)
             next_state, reward, terminated, truncated, info = env.step(action)
             
             episode_reward += reward
@@ -74,12 +76,12 @@ def run_evaluation(env, agent, num_episodes=10, max_steps=5000):
     return avg_reward, success_rate, avg_steps
 
 def train(
-    num_episodes=500,
-    target_update=2000,  # Now in steps
-    save_interval=10,
-    log_interval=10,
-    epsilon_start=0.6,
-    epsilon_decay_episodes=350,
+    num_episodes=3000,
+    target_update=2500,  # Now in steps
+    save_interval=100,
+    log_interval=100,
+    epsilon_start=0.8,
+    epsilon_decay_episodes=2200,
     lr=1e-4,
     gamma=0.99,
     buffer_size=100000,
@@ -88,18 +90,31 @@ def train(
     epsilon_threshold=0.1,
     max_steps=5000,
     random_spawn=False,
-    gui=True,
     seed=100,
-    checkpoint_dir="checkpoints"
+    gui=True,
+    checkpoint_dir="checkpoints",
+    persistence=5,
+    resume=None
 ):
     # Print Parameters
-    print("\n" + "="*30)
+    print("\n" + "="*40)
     print("STARTING SINGLE-THREAD TRAINING SESSION")
-    print("="*30)
-    print(f"Total Target Episodes: {num_episodes}")
-    print(f"Max Steps/Episode: {max_steps}")
-    print(f"Batch Size: {batch_size}")
-    print(f"Learning Rate: {lr}")
+    print("="*40)
+    print(f"  Episodes:          {num_episodes}")
+    print(f"  Max Steps/Episode: {max_steps}")
+    print(f"  Batch Size:        {batch_size}")
+    print(f"  Learning Rate:     {lr}")
+    print(f"  Gamma:             {gamma}")
+    print(f"  Buffer Size:       {buffer_size}")
+    print(f"  Target Update:     {target_update} steps")
+    print(f"  Epsilon Start:     {epsilon_start}")
+    print(f"  Epsilon Decay:     {epsilon_decay_episodes} episodes")
+    print(f"  Success Threshold: {success_threshold}")
+    print(f"  Persistence:       {persistence}")
+    print(f"  Random Spawn:      {random_spawn}")
+    print(f"  Seed:              {seed}")
+    print(f"  GUI:               {gui}")
+    print(f"  Checkpoint Dir:    {checkpoint_dir}")
     
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
@@ -118,19 +133,42 @@ def train(
         buffer_size=buffer_size, 
         batch_size=batch_size,
         epsilon_start=epsilon_start,
-        epsilon_decay_episodes=epsilon_decay_episodes
+        epsilon_decay_episodes=epsilon_decay_episodes,
+        persistence=persistence
     )
     
     print(f"Device: {agent.device.type.upper()}")
     print(f"Maze Seed: {seed}")
     
-    # Load existing weights if present
-    best_model_path = os.path.join(checkpoint_dir, "dqn_marble_best.pth")
-    if os.path.exists(best_model_path):
-        print(f"Loading existing weights from {best_model_path}...")
-        agent.load(best_model_path)
+    # Load from checkpoint if resume is specified
+    if resume:
+        checkpoint_path = resume if os.path.isfile(resume) else os.path.join(checkpoint_dir, resume)
+        if os.path.exists(checkpoint_path):
+            print(f"Resuming training from checkpoint: {checkpoint_path}")
+            agent.load_checkpoint(checkpoint_path)
+            
+            # Extract episode number from filename if possible (e.g., dqn_checkpoint_ep_50.pth)
+            import re
+            ep_match = re.search(r'ep_(\d+)', os.path.basename(checkpoint_path))
+            if ep_match:
+                episodes_completed = int(ep_match.group(1))
+                print(f"Resuming from episode {episodes_completed}")
+            
+            # Load heatmap if it exists
+            heatmap_path = checkpoint_path.replace('.pth', '_heatmap.npy')
+            if os.path.exists(heatmap_path):
+                env.load_heatmap(heatmap_path)
+                print(f"Loaded heatmap from {heatmap_path}")
+        else:
+            print(f"Error: Checkpoint {checkpoint_path} not found!")
     else:
-        print("No existing weights found. Starting from scratch.")
+        # Fallback to loading best weights if not resuming
+        best_model_path = os.path.join(checkpoint_dir, "dqn_marble_best.pth")
+        if os.path.exists(best_model_path):
+            print(f"Loading existing best weights from {best_model_path}...")
+            agent.load(best_model_path)
+        else:
+            print("No existing weights found. Starting from scratch.")
         
     print("="*30 + "\n")
     
@@ -149,10 +187,14 @@ def train(
     steps_history = deque(maxlen=log_interval)
     success_history = deque(maxlen=log_interval)
     
+    # NEW: For Delta Heatmap tracking
+    previous_heatmap_grid = np.zeros_like(env.heatmap_grid)
+    
     progress_bar = tqdm(total=num_episodes, desc="Training", position=0, leave=True)
     
     while episodes_completed < num_episodes:
-        state, _ = env.reset()
+        state, info = env.reset() # Capture info from reset
+        agent.reset_sticky()
         episode_reward = 0
         episode_steps = 0
         is_win = False
@@ -172,8 +214,11 @@ def train(
             effective_epsilon = max(agent.epsilon, local_novelty_epsilon * novelty_factor)
         
             
+            # Retrieve Action Mask from info (available from both reset and step)
+            action_mask = info.get('action_mask', None)
+            
             # Select action with local epsilon
-            action = agent.select_action(state, epsilon=effective_epsilon, action_mask=None)
+            action = agent.select_action(state, epsilon=effective_epsilon, action_mask=action_mask)
             # print("Action: ", action)
             
             # 3. Step env
@@ -255,7 +300,7 @@ def train(
         # This helps reaching the stopping condition faster if the agent is stable.
         if len(success_history) >= 5:
             if success_rate > 0.8:
-                agent.epsilon = min(agent.epsilon, 0.05)
+                agent.epsilon = min(agent.epsilon, 0.01)
             elif success_rate > 0.5:
                 agent.epsilon = min(agent.epsilon, 0.1)
             elif success_rate > 0.2:
@@ -285,53 +330,55 @@ def train(
             tqdm.write(f"\n--- Episode {episodes_completed} EVALUATION ---")
             tqdm.write(f"Eval Reward: {eval_reward:.2f}, Success: {eval_success*100:.1f}%, Epsilon: {agent.epsilon:.3f}")
             
-            # 2. Save Best Model based on evaluation performance
+            # 2. Save Best Model weights
             if eval_reward > best_eval_reward:
                 best_eval_reward = eval_reward
                 agent.save(os.path.join(checkpoint_dir, "dqn_marble_best.pth"))
                 tqdm.write(f"New Best Model Saved! (Eval Reward: {eval_reward:.2f})")
             
-            # 3. Early Stopping Check based on evaluation success
+            # 3. Save Full Checkpoint for resumption
+            checkpoint_path = os.path.join(checkpoint_dir, f"dqn_checkpoint_ep_{episodes_completed}.pth")
+            agent.save_checkpoint(checkpoint_path)
+            env.save_heatmap(checkpoint_path.replace('.pth', '_heatmap.npy'))
+            
+            # 4. Early Stopping Check based on evaluation success
             if eval_success >= success_threshold and episodes_completed > 50:
                  tqdm.write(f"\n[EARLY STOPPING] Policy solved the maze! (Eval Success: {eval_success*100:.1f}%)")
                  # Break outer loop
                  break
         
-        # Periodic Heatmap Export
         if episodes_completed % log_interval == 0:
             try:
-                heatmap_grid = env.heatmap_grid
+                current_heatmap = env.heatmap_grid.copy()
                 
-                # Save heatmap to disk
+                # 1. Standard Heatmap
                 heatmap_path = os.path.join(checkpoint_dir, f'heatmap_ep_{episodes_completed}.png')
-                visualize_heatmap(
-                    heatmap_grid, 
-                    save_path=heatmap_path,
-                    title=f'Exploration Heatmap - Episode {episodes_completed}'
-                )
+                visualize_heatmap(current_heatmap, save_path=heatmap_path, title=f'Heatmap - Episode {episodes_completed}')
                 
-                # Log heatmap to TensorBoard
-                heatmap_image = heatmap_to_image(heatmap_grid, title=f'Heatmap - Ep {episodes_completed}')
-                writer.add_image('Heatmap/Global', heatmap_image, episodes_completed)
+                # 2. Logarithmic Heatmap (Makes low-visit areas visible)
+                log_heatmap = np.log1p(current_heatmap)
+                log_path = os.path.join(checkpoint_dir, f'heatmap_log_ep_{episodes_completed}.png')
+                visualize_heatmap(log_heatmap, save_path=log_path, title=f'Log Heatmap (Detailed) - Ep {episodes_completed}')
                 
-                # --- NEW: Epsilon Heatmap ---
-                # Calculate epsilon for every cell based on the same formula used in step()
-                # Local novelty part: 1.0 / (1.0 + ln(visits))
-                epsilon_grid = 1.0 / (1.0 + np.log(np.maximum(1, heatmap_grid)))
-                # Combine with global epsilon
+                # 3. Delta Heatmap (Recent activity only)
+                delta_heatmap = current_heatmap - previous_heatmap_grid
+                delta_path = os.path.join(checkpoint_dir, f'heatmap_delta_ep_{episodes_completed}.png')
+                visualize_heatmap(delta_heatmap, save_path=delta_path, title=f'Recent Activity (Delta) - Ep {episodes_completed}')
+                
+                # Update previous for next interval
+                previous_heatmap_grid = current_heatmap
+                
+                # 4. Epsilon Map
+                epsilon_grid = 1.0 / (1.0 + np.log(np.maximum(1, current_heatmap)))
                 epsilon_grid = np.maximum(agent.epsilon, epsilon_grid)
-                
-                # Save epsilon heatmap to disk
                 eps_path = os.path.join(checkpoint_dir, f'epsilon_ep_{episodes_completed}.png')
-                visualize_heatmap(
-                    epsilon_grid, 
-                    save_path=eps_path,
-                    title=f'Epsilon Heatmap - Episode {episodes_completed}'
-                )
+                visualize_heatmap(epsilon_grid, save_path=eps_path, title=f'Epsilon Map - Ep {episodes_completed}')
                 
-                # Log epsilon heatmap to TensorBoard
-                eps_image = heatmap_to_image(epsilon_grid, title=f'Epsilon Map - Ep {episodes_completed}')
-                writer.add_image('Heatmap/Epsilon', eps_image, episodes_completed)
+                # Log to TensorBoard
+                writer.add_image('Heatmap/Standard', heatmap_to_image(current_heatmap), episodes_completed)
+                writer.add_image('Heatmap/Logarithmic', heatmap_to_image(log_heatmap), episodes_completed)
+                writer.add_image('Heatmap/Delta', heatmap_to_image(delta_heatmap), episodes_completed)
+                writer.add_image('Heatmap/Epsilon', heatmap_to_image(epsilon_grid), episodes_completed)
                 
             except Exception as e:
                 tqdm.write(f"Warning: Could not save heatmap: {e}")
@@ -344,13 +391,15 @@ def train(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train DQN Agent for Marble Game")
-    parser.add_argument("--num_episodes", type=int, default=500, help="Total episodes to train")
+    parser.add_argument("--num_episodes", type=int, default=2000, help="Total episodes to train")
     parser.add_argument("--max_steps", type=int, default=5000, help="Max steps per episode")
     parser.add_argument("--no-gui", action="store_false", dest="gui", default=True, help="Disable PyBullet GUI (enabled by default)")
     parser.add_argument("--seed", type=int, default=100, help="Random seed")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--random_spawn", action="store_true", help="Randomize marble spawn point")
+    parser.add_argument("--persistence", type=int, default=5, help="Number of steps to repeat random actions")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     
     args = parser.parse_args()
     
@@ -361,5 +410,7 @@ if __name__ == "__main__":
         seed=args.seed,
         lr=args.lr,
         batch_size=args.batch_size,
-        random_spawn=args.random_spawn
+        random_spawn=args.random_spawn,
+        persistence=args.persistence,
+        resume=args.resume
     )

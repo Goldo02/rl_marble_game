@@ -34,7 +34,7 @@ class ReplayBuffer:
 
 class DQNAgent:
     def __init__(self, state_dim, action_dim, lr=1e-4, gamma=0.99, buffer_size=100000, batch_size=64, 
-                 epsilon_start=1.0, epsilon_decay_episodes=1500):
+                 epsilon_start=1.0, epsilon_decay_episodes=1500, persistence=1):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.gamma = gamma
@@ -54,8 +54,18 @@ class DQNAgent:
         self.steps_done = 0
         self.epsilon = epsilon_start
         self.epsilon_start = epsilon_start
-        self.epsilon_min = 0.05
+        self.epsilon_min = 0.01
         self.epsilon_decay_episodes = epsilon_decay_episodes
+        
+        # Sticky Actions (Persistence)
+        self.persistence = persistence
+        self.sticky_action = None
+        self.sticky_steps = 0
+
+    def reset_sticky(self):
+        """Reset the persistence state (called at the start of each episode)"""
+        self.sticky_action = None
+        self.sticky_steps = 0
 
     def decay_epsilon(self, episode_idx):
         # Linear decay: reaches epsilon_min at epsilon_decay_episodes
@@ -66,6 +76,16 @@ class DQNAgent:
     def select_action(self, state, epsilon=None, action_mask=None):
         self.steps_done += 1
         
+        # 1. Check for Sticky Action (Persistence)
+        if self.sticky_steps > 0:
+            self.sticky_steps -= 1
+            # Verify if sticky action is still valid if mask is provided
+            if action_mask is not None and not action_mask[self.sticky_action]:
+                # Sticky action became invalid! Stop sticking.
+                self.sticky_steps = 0
+            else:
+                return self.sticky_action
+        
         eps = epsilon if epsilon is not None else self.epsilon
         
         # Random Action (Exploration)
@@ -74,10 +94,18 @@ class DQNAgent:
                 # Choose uniformly from VALID actions
                 valid_indices = np.where(action_mask)[0]
                 if len(valid_indices) > 0:
-                    return random.choice(valid_indices)
-                return random.randrange(self.action_dim) # Fallback if all masked (shouldn't happen)
+                    action = random.choice(valid_indices)
+                else:
+                    action = random.randrange(self.action_dim)
             else:
-                return random.randrange(self.action_dim)
+                action = random.randrange(self.action_dim)
+            
+            # Activate Persistence for Random Actions
+            if self.persistence > 1:
+                self.sticky_action = action
+                self.sticky_steps = self.persistence - 1 # -1 because we execute it now
+                
+            return action
         
         # Greedy Action (Exploitation)
         else:
@@ -170,3 +198,37 @@ class DQNAgent:
     def load(self, filepath):
         self.policy_net.load_state_dict(torch.load(filepath, map_location=self.device))
         self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def save_checkpoint(self, filepath):
+        """Saves everything needed to resume training"""
+        checkpoint = {
+            'policy_net_state_dict': self.policy_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'epsilon': self.epsilon,
+            'steps_done': self.steps_done,
+            'memory': list(self.memory.buffer),
+            'success_memory': list(self.success_memory.buffer)
+        }
+        torch.save(checkpoint, filepath)
+        print(f"Checkpoint saved to {filepath}")
+
+    def load_checkpoint(self, filepath):
+        """Loads everything and resumes state"""
+        if not torch.cuda.is_available():
+            checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
+        else:
+            checkpoint = torch.load(filepath)
+            
+        self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
+        self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.epsilon = checkpoint['epsilon']
+        self.steps_done = checkpoint['steps_done']
+        
+        # Restore buffers
+        self.memory.buffer.extend(checkpoint['memory'])
+        self.success_memory.buffer.extend(checkpoint['success_memory'])
+        
+        print(f"Checkpoint loaded from {filepath}")
+        return self.epsilon
