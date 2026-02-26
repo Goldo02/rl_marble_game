@@ -99,13 +99,6 @@ class DQNAgent:
                     action = random.randrange(self.action_dim)
             else:
                 action = random.randrange(self.action_dim)
-            
-            # Activate Persistence for Random Actions
-            if self.persistence > 1:
-                self.sticky_action = action
-                self.sticky_steps = self.persistence - 1 # -1 because we execute it now
-                
-            return action
         
         # Greedy Action (Exploitation)
         else:
@@ -123,7 +116,14 @@ class DQNAgent:
                     min_val = float('-inf')
                     q_values[0, ~mask_tensor] = min_val
                 
-                return q_values.argmax().item()
+                action = q_values.argmax().item()
+
+        # Activate Persistence for the selected action (Random or Greedy)
+        if self.persistence > 1:
+            self.sticky_action = action
+            self.sticky_steps = self.persistence - 1 # -1 because we execute it now
+            
+        return action
 
     def store_transition(self, state, action, reward, next_state, done):
         self.memory.push(state, action, reward, next_state, done)
@@ -196,7 +196,10 @@ class DQNAgent:
         torch.save(self.policy_net.state_dict(), filepath)
         
     def load(self, filepath):
-        self.policy_net.load_state_dict(torch.load(filepath, map_location=self.device))
+        try:
+            self.policy_net.load_state_dict(torch.load(filepath, map_location=self.device, weights_only=True))
+        except TypeError: # Older torch version
+            self.policy_net.load_state_dict(torch.load(filepath, map_location=self.device))
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def save_checkpoint(self, filepath):
@@ -215,10 +218,16 @@ class DQNAgent:
 
     def load_checkpoint(self, filepath):
         """Loads everything and resumes state"""
-        if not torch.cuda.is_available():
-            checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
-        else:
-            checkpoint = torch.load(filepath)
+        try:
+            if not torch.cuda.is_available():
+                checkpoint = torch.load(filepath, map_location=torch.device('cpu'), weights_only=False)
+            else:
+                checkpoint = torch.load(filepath, weights_only=False)
+        except TypeError: # Older torch version
+            if not torch.cuda.is_available():
+                checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
+            else:
+                checkpoint = torch.load(filepath)
             
         self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
         self.target_net.load_state_dict(checkpoint['target_net_state_dict'])

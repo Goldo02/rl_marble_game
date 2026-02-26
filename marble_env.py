@@ -86,9 +86,9 @@ class MarbleEnv(gym.Env):
         self.action_space = spaces.Discrete(9)
         
         # Observation Space: 8 continuous values
-        low = np.array([-5.0, -5.0, -10.0, -10.0, -0.5, -0.5, -5.0, -5.0], dtype=np.float32)
-        high = np.array([5.0, 5.0, 10.0, 10.0, 0.5, 0.5, 5.0, 5.0], dtype=np.float32)
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        # Observation space:
+        # [x, y, vx, vy, tilt_x, tilt_y, bfs_dist, bfs_dx, bfs_dy, wall_N, wall_S, wall_E, wall_W]
+        self.observation_space = spaces.Box(low=-10, high=10, shape=(13,), dtype=np.float32)
         
         # Internal state for tilt
         self.tilt_x = 0.0
@@ -360,29 +360,59 @@ class MarbleEnv(gym.Env):
 
     def _get_obs(self):
         pos, vel = self.game.get_state()
-        x, y = pos[0], pos[1]
-        vx, vy = vel[0], vel[1]
         
-        # Calculate distance vector
-        dx = x - self.target_pos[0]
-        dy = y - self.target_pos[1]
+        gx, gy = self.get_grid_indices(pos[0], pos[1])
+        # Safety clip to ensure indices are within maze bounds
+        gx = np.clip(gx, 0, self.game.maze_width - 1)
+        gy = np.clip(gy, 0, self.game.maze_height - 1)
         
-        # Normalize observations to approximately [-1, 1]
-        # X, Y: [-5, 5] -> [-1, 1]
-        # VX, VY: [-10, 10] -> [-1, 1]
-        # Tilt: [-0.17, 0.17] (10 deg) -> [-0.34, 0.34] if divided by 0.5
-        # Distance: [-5, 5] -> [-1, 1]
+        # 1. BFS Distance (normalized)
+        # Max distance in a 19x19 maze is approx 100-150 steps
+        bfs_dist = self.bfs_map[gy][gx]
+        bfs_dist_norm = bfs_dist / 50.0  # Normalized 
         
+        # 2. BFS Next Step Direction
+        # Look at 4 neighbors and find which one has min BFS
+        bfs_dx, bfs_dy = 0, 0
+        min_bfs = bfs_dist
+        
+        neighbors = [
+            (0, -1), # North (Y-)
+            (0, 1),  # South (Y+)
+            (1, 0),  # East (X+)
+            (-1, 0)  # West (X-)
+        ]
+        
+        for dx, dy in neighbors:
+            nx, ny = gx + dx, gy + dy
+            if 0 <= nx < self.game.maze_width and 0 <= ny < self.game.maze_height:
+                if self.bfs_map[ny][nx] < min_bfs:
+                    min_bfs = self.bfs_map[ny][nx]
+                    bfs_dx, bfs_dy = dx, dy
+        
+        # 3. Local Wall Sensors (N, S, E, W)
+        walls = []
+        for dx, dy in [(0, -1), (0, 1), (1, 0), (-1, 0)]:
+            nx, ny = gx + dx, gy + dy
+            is_wall = 1.0 if (nx < 0 or nx >= self.game.maze_width or 
+                             ny < 0 or ny >= self.game.maze_height or 
+                             self.game.maze_gen.grid[ny][nx] == 1) else 0.0
+            walls.append(is_wall)
+        
+        # Combine everything
         obs = np.array([
-            x / 5.0, 
-            y / 5.0, 
-            vx / 10.0, 
-            vy / 10.0, 
-            self.tilt_x / 0.5, 
-            self.tilt_y / 0.5, 
-            dx / 5.0, 
-            dy / 5.0
+            pos[0] / 5.0,
+            pos[1] / 5.0,
+            vel[0] / 10.0,
+            vel[1] / 10.0,
+            self.tilt_x / 0.5,
+            self.tilt_y / 0.5,
+            bfs_dist_norm,
+            float(bfs_dx),
+            float(bfs_dy),
+            *walls
         ], dtype=np.float32)
+        
         return obs
 
     def close(self):

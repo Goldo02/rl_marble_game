@@ -76,12 +76,12 @@ def run_evaluation(env, agent, num_episodes=10, max_steps=5000):
     return avg_reward, success_rate, avg_steps
 
 def train(
-    num_episodes=3000,
+    num_episodes=2000,
     target_update=2500,  # Now in steps
     save_interval=100,
     log_interval=100,
     epsilon_start=0.8,
-    epsilon_decay_episodes=2200,
+    epsilon_decay_episodes=1850,
     lr=1e-4,
     gamma=0.99,
     buffer_size=100000,
@@ -145,7 +145,14 @@ def train(
         checkpoint_path = resume if os.path.isfile(resume) else os.path.join(checkpoint_dir, resume)
         if os.path.exists(checkpoint_path):
             print(f"Resuming training from checkpoint: {checkpoint_path}")
-            agent.load_checkpoint(checkpoint_path)
+            try:
+                agent.load_checkpoint(checkpoint_path)
+            except Exception as e:
+                print(f"\n[ERROR] Could not load checkpoint: {e}")
+                print("Architecture might have changed (e.g., from 8 to 13 inputs).")
+                print("Starting fresh training instead.")
+                episodes_completed = 0
+                resume = False 
             
             # Extract episode number from filename if possible (e.g., dqn_checkpoint_ep_50.pth)
             import re
@@ -166,7 +173,10 @@ def train(
         best_model_path = os.path.join(checkpoint_dir, "dqn_marble_best.pth")
         if os.path.exists(best_model_path):
             print(f"Loading existing best weights from {best_model_path}...")
-            agent.load(best_model_path)
+            try:
+                agent.load(best_model_path)
+            except Exception as e:
+                print(f"Incompatible weights found in {best_model_path}. Skipping load.")
         else:
             print("No existing weights found. Starting from scratch.")
         
@@ -186,9 +196,6 @@ def train(
     rewards_history = deque(maxlen=log_interval)
     steps_history = deque(maxlen=log_interval)
     success_history = deque(maxlen=log_interval)
-    
-    # NEW: For Delta Heatmap tracking
-    previous_heatmap_grid = np.zeros_like(env.heatmap_grid)
     
     progress_bar = tqdm(total=num_episodes, desc="Training", position=0, leave=True)
     
@@ -351,33 +358,20 @@ def train(
             try:
                 current_heatmap = env.heatmap_grid.copy()
                 
-                # 1. Standard Heatmap
-                heatmap_path = os.path.join(checkpoint_dir, f'heatmap_ep_{episodes_completed}.png')
-                visualize_heatmap(current_heatmap, save_path=heatmap_path, title=f'Heatmap - Episode {episodes_completed}')
-                
-                # 2. Logarithmic Heatmap (Makes low-visit areas visible)
+                # 1. Logarithmic Heatmap (Makes low-visit areas visible)
+                # This is the primary view for monitoring discovery progress
                 log_heatmap = np.log1p(current_heatmap)
                 log_path = os.path.join(checkpoint_dir, f'heatmap_log_ep_{episodes_completed}.png')
-                visualize_heatmap(log_heatmap, save_path=log_path, title=f'Log Heatmap (Detailed) - Ep {episodes_completed}')
+                visualize_heatmap(log_heatmap, save_path=log_path, title=f'Log Heatmap - Ep {episodes_completed}')
                 
-                # 3. Delta Heatmap (Recent activity only)
-                delta_heatmap = current_heatmap - previous_heatmap_grid
-                delta_path = os.path.join(checkpoint_dir, f'heatmap_delta_ep_{episodes_completed}.png')
-                visualize_heatmap(delta_heatmap, save_path=delta_path, title=f'Recent Activity (Delta) - Ep {episodes_completed}')
-                
-                # Update previous for next interval
-                previous_heatmap_grid = current_heatmap
-                
-                # 4. Epsilon Map
+                # 2. Epsilon Map (Shows where curiosity is still high)
                 epsilon_grid = 1.0 / (1.0 + np.log(np.maximum(1, current_heatmap)))
                 epsilon_grid = np.maximum(agent.epsilon, epsilon_grid)
                 eps_path = os.path.join(checkpoint_dir, f'epsilon_ep_{episodes_completed}.png')
                 visualize_heatmap(epsilon_grid, save_path=eps_path, title=f'Epsilon Map - Ep {episodes_completed}')
                 
                 # Log to TensorBoard
-                writer.add_image('Heatmap/Standard', heatmap_to_image(current_heatmap), episodes_completed)
                 writer.add_image('Heatmap/Logarithmic', heatmap_to_image(log_heatmap), episodes_completed)
-                writer.add_image('Heatmap/Delta', heatmap_to_image(delta_heatmap), episodes_completed)
                 writer.add_image('Heatmap/Epsilon', heatmap_to_image(epsilon_grid), episodes_completed)
                 
             except Exception as e:
